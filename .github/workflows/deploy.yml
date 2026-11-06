@@ -87,7 +87,8 @@ jobs:
       - name: Downcase repository name
         id: repo_name
         run: |
-          echo "IMAGE_NAME=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_NAME=${{ env.REGISTRY }}/${REPO_LOWER}/${{ matrix.service }}" >> $GITHUB_ENV
 
       - name: Extract metadata (tags, labels)
         id: meta
