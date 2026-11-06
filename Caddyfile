@@ -1,0 +1,17 @@
+# {$SITE_ADDRESS} reads from the SITE_ADDRESS environment variable.
+# Local:      SITE_ADDRESS=:80  → Caddy listens on port 80 (plain HTTP)
+# Production: SITE_ADDRESS=your-domain.nip.io → Caddy auto-fetches HTTPS cert from Let's Encrypt
+{$SITE_ADDRESS}  {
+
+  # Route any request starting with /api/ to the NestJS backend container.
+  # This is why the frontend calls relative /api/... with no hardcoded URLs or CORS.
+  handle /api/* {
+    reverse_proxy backend:3001
+  }
+
+  # Route everything else (/, /favicon.ico, _next/static/*, etc.) to Next.js frontend.
+  handle {
+    reverse_proxy frontend:3000
+  }
+}
+
