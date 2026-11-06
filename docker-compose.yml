@@ -1,0 +1,135 @@
+services:
+
+  # ── Caddy: reverse proxy ──────────────────────────────────────────────────
+  # Caddy is the ONLY container that exposes ports to the internet.
+  # It terminates HTTP/HTTPS traffic and routes to frontend or backend
+  # based on the URL path. This keeps all other services in a private network.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped   # Restart automatically on crash or server reboot
+    ports:
+      - "80:80"               # HTTP (Caddy auto-redirects to HTTPS in production)
+      - "443:443"             # HTTPS (Caddy auto-fetches Let's Encrypt cert)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro    # Mount our Caddyfile (read-only)
+      - caddy_data:/data                        # Caddy persists TLS certs here
+      - caddy_config:/config                    # Caddy config cache
+    env_file:
+      - .env                  # Reads SITE_ADDRESS for the Caddyfile template
+    depends_on:
+      - frontend
+      - backend
+
+  # ── Frontend: Next.js ─────────────────────────────────────────────────────
+  frontend:
+    image: ${REGISTRY}/frontend:${TAG:-latest}
+    build:
+      context: ./frontend     # Docker build context is the frontend/ folder
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # In production, Caddy handles /api routing — no backend URL needed.
+      # In local standalone mode, the Next.js rewrite proxies to backend.
+      BACKEND_URL: http://backend:3001
+    healthcheck:
+      # wget verifies the page is serving over IPv4 loopback (127.0.0.1).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    depends_on:
+      - backend
+
+  # ── Backend: NestJS API ───────────────────────────────────────────────────
+  backend:
+    image: ${REGISTRY}/backend:${TAG:-latest}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BACKEND_PORT: 3001
+    healthcheck:
+      # /api/health checks both PostgreSQL and Redis connections.
+      # Docker uses this to determine when backend is ready to serve traffic.
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy   # Wait until postgres passes its healthcheck
+      redis:
+        condition: service_healthy   # Wait until redis passes its healthcheck
+
+  # ── Worker: BullMQ background job consumer ────────────────────────────────
+  worker:
+    image: ${REGISTRY}/worker:${TAG:-latest}
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    # The worker healthcheck reads the heartbeat file written every 10 seconds.
+    # If the file is older than 1 minute, the worker is considered unhealthy.
+    healthcheck:
+      test: ["CMD", "find", "/tmp/heartbeat", "-mmin", "-1"]
+      interval: 20s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── PostgreSQL: relational database ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine        # Pinned version — reproducible deployments
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      # Named volume persists database data across container restarts and redeployments.
+      # 'docker compose down' keeps the volume. Only 'docker compose down -v' deletes it.
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready checks if PostgreSQL is accepting connections.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    # Postgres does NOT expose port 5432 externally — only accessible inside Docker network.
+
+  # ── Redis: in-memory job queue broker ────────────────────────────────────
+  redis:
+    image: redis:7-alpine            # Pinned version — reproducible deployments
+    restart: unless-stopped
+    healthcheck:
+      # redis-cli ping returns PONG when Redis is ready to accept connections.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
+    # Redis does NOT expose port 6379 externally — only accessible inside Docker network.
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  pgdata:         # PostgreSQL data — survives container restarts and redeployments
+  caddy_data:     # Caddy TLS certificates — avoids re-fetching certs on every restart
+  caddy_config:   # Caddy config cache
+
