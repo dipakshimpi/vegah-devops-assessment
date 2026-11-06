@@ -146,11 +146,15 @@ jobs:
 
       - name: Configure SSH and Deploy to EC2
         env:
-          HOST: ${{ secrets.EC2_HOST }}
-          SSH_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+          RAW_HOST: ${{ secrets.EC2_HOST }}
+          RAW_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
           SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           TARGET_TAG: ${{ github.event.inputs.rollback_tag || github.sha }}
         run: |
+          # Sanitize host and user (strip any accidental spaces, newlines, or carriage returns)
+          HOST=$(echo "$RAW_HOST" | tr -d '[:space:]')
+          SSH_USER=$(echo "$RAW_USER" | tr -d '[:space:]')
+
           # 1. Setup SSH directory and private key
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/id_rsa
@@ -158,11 +162,11 @@ jobs:
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts
 
           # 2. Copy configuration files cleanly to /opt/app
-          scp -i ~/.ssh/id_rsa docker-compose.yml "${SSH_USER}@${HOST}:/opt/app/docker-compose.yml"
-          scp -i ~/.ssh/id_rsa Caddyfile "${SSH_USER}@${HOST}:/opt/app/Caddyfile"
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new docker-compose.yml "${SSH_USER}@${HOST}:/opt/app/docker-compose.yml"
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new Caddyfile "${SSH_USER}@${HOST}:/opt/app/Caddyfile"
 
           # 3. Pull new SHA images, reload containers, and verify healthcheck
-          ssh -i ~/.ssh/id_rsa "${SSH_USER}@${HOST}" bash -s << EOF
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new "${SSH_USER}@${HOST}" bash -s << EOF
             set -e
             cd /opt/app
             export TAG=${TARGET_TAG}
