@@ -132,4 +132,47 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
 
+  # ── 3. CONTINUOUS DEPLOYMENT (AWS EC2 over SSH) ────────────────────────────
+  # Runs after tests and container builds pass. Delivers config, pulls new SHA images,
+  # and verifies health without exposing any cloud credentials to CI.
+  deploy:
+    name: Deploy to AWS EC2
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Deliver compose orchestration and Caddy configuration to the server
+      - name: Copy docker-compose and Caddyfile to EC2
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: 'docker-compose.yml,Caddyfile'
+          target: '/opt/app'
+
+      # Deploy latest SHA-tagged containers on the server
+      - name: Deploy on EC2 via SSH
+        uses: appleboy/ssh-action@master
+        env:
+          TARGET_TAG: ${{ github.event.inputs.rollback_tag || github.sha }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: TARGET_TAG
+          script: |
+            cd /opt/app
+            export TAG=${TARGET_TAG}
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
+            sleep 10
+            curl -f http://localhost/api/health || exit 1
+            echo "Deployment successful for commit ${TARGET_TAG}"
+
+
 
