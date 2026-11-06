@@ -1,35 +1,44 @@
-# Dependencies
+# Dependencies (in root and all subfolders)
 node_modules/
-*/node_modules/
+**/node_modules/
+
+# Build outputs (in root and all subfolders)
+dist/
+**/dist/
+.next/
+**/.next/
+out/
+**/out/
+build/
+**/build/
+*.tsbuildinfo
+**/*.tsbuildinfo
 
 # Environment files (never commit secrets)
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
-# Build outputs
-dist/
-*/dist/
-.next/
-*/.next/
-out/
-build/
-
-# Temporary and test artifacts
+# Temporary files & heartbeats
 *.tmp
+**/*.tmp
 heartbeat.tmp
-/tmp/
+**/heartbeat.tmp
 
 # Keys and credentials
 *.pem
+**/*.pem
 *.key
+**/*.key
 
 # Logs
 *.log
+**/*.log
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 
 # OS metadata
 .DS_Store
