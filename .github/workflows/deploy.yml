@@ -96,6 +96,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
+            type=sha,prefix=,format=long
             type=sha,prefix=,format=short
             type=raw,value=latest
 
