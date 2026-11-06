@@ -1,0 +1,20 @@
+# Ignore node_modules — Docker installs them fresh inside the image
+node_modules/
+
+# Ignore Next.js build output — the builder stage builds fresh
+.next/
+out/
+
+# Ignore environment files — secrets must NEVER be baked into an image
+.env
+.env.*
+!.env.example
+
+# Ignore git metadata
+.git
+.gitignore
+
+# Ignore logs
+*.log
+npm-debug.log*
+
