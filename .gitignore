@@ -43,3 +43,12 @@ yarn-debug.log*
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Terraform state and local files
+.terraform/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfstate*
+*.tfvars
+!*.example.tfvars
