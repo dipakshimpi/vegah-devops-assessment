@@ -8,3 +8,4 @@ A containerized job processing system featuring Next.js, NestJS, BullMQ, Redis, 
 - `worker/` - Standalone TypeScript background job consumer
 - `.github/workflows/` - CI/CD pipeline definitions
 - `01-requirements.md` - `07-interview-prep.md` - Architecture, requirements, and deployment specifications
+
