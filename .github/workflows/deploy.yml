@@ -145,8 +145,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure SSH and Deploy to EC2
-        env:
-          TARGET_TAG: ${{ github.event.inputs.rollback_tag || github.sha }}
         run: |
           # 1. Setup SSH directory and private key
           mkdir -p ~/.ssh
@@ -154,20 +152,22 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
 
-          # 2. Copy docker-compose.yml and Caddyfile to /opt/app
-          scp -i ~/.ssh/id_rsa docker-compose.yml Caddyfile ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/app/
+          # 2. Copy configuration files cleanly to /opt/app
+          scp -i ~/.ssh/id_rsa docker-compose.yml ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/app/docker-compose.yml
+          scp -i ~/.ssh/id_rsa Caddyfile ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/opt/app/Caddyfile
 
-          # 3. Pull new SHA images, restart containers, and verify healthcheck
-          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "
+          # 3. Pull new SHA images, reload containers, and verify healthcheck
+          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} bash -s << 'EOF'
+            set -e
             cd /opt/app
-            export TAG=${TARGET_TAG}
+            export TAG=${{ github.event.inputs.rollback_tag || github.sha }}
             docker compose pull
             docker compose up -d
             docker image prune -f
             sleep 10
             curl -f http://localhost/api/health || exit 1
-            echo 'Deployment successful for tag: '${TARGET_TAG}
-          "
+            echo "Deployment successful for commit ${TAG}"
+          EOF
 
 
 
