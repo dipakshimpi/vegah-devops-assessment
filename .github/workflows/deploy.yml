@@ -67,7 +67,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         service: [frontend, backend, worker]
     steps:
@@ -84,33 +84,38 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Downcase repository name
+        id: repo_name
+        run: |
+          echo "IMAGE_NAME=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=,format=short
             type=raw,value=latest
 
-      # Build image locally first (without pushing) so Trivy can scan it
-      - name: Build image for vulnerability scanning
+      # Build image locally first so Trivy can scan it
+      - name: Build image locally
         uses: docker/build-push-action@v5
         with:
           context: ./${{ matrix.service }}
           file: ./${{ matrix.service }}/Dockerfile
           load: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ matrix.service }}:test
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      # DevSecOps: Scan image for critical CVEs before publishing
+      # DevSecOps: Scan local image for critical CVEs before publishing
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+          image-ref: '${{ matrix.service }}:test'
           format: 'table'
-          exit-code: '0' # Note: Set to '1' in strict environments to block build; 0 allows non-blocking inspection
+          exit-code: '0'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
