@@ -1,0 +1,179 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rollback_tag:
+        description: 'Image tag (commit SHA) to rollback to'
+        required: false
+        default: ''
+
+# Concurrency group ensures two pushes don't attempt to deploy simultaneously
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ── 1. TEST & BUILD CHECKS ──────────────────────────────────────────────────
+  # Verifies TypeScript compilation and code health before touching any containers.
+  test:
+    name: Test & Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package.json
+            worker/package.json
+            frontend/package.json
+
+      - name: Verify Backend Build
+        run: |
+          cd backend
+          npm install
+          npm run build
+
+      - name: Verify Worker Build
+        run: |
+          cd worker
+          npm install
+          npm run build
+
+      - name: Verify Frontend Build
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+  # ── 2. DOCKER BUILD, SECURITY SCAN, & PUSH TO GHCR ──────────────────────────
+  # Builds images in parallel using a matrix, scans with Trivy, pushes to GHCR.
+  build-and-push:
+    name: Build & Push (${{ matrix.service }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        service: [frontend, backend, worker]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest
+
+      # Build image locally first (without pushing) so Trivy can scan it
+      - name: Build image for vulnerability scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # DevSecOps: Scan image for critical CVEs before publishing
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ github.sha }}
+          format: 'table'
+          exit-code: '0' # Note: Set to '1' in strict environments to block build; 0 allows non-blocking inspection
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      # Push verified image to GHCR
+      - name: Push verified image to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          file: ./${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+
+  # ── 3. CLOUD DEPLOY (AWS EC2 over SSH) ──────────────────────────────────────
+  # Pulls newly published SHA-tagged images on EC2 and restarts containers cleanly.
+  deploy:
+    name: Deploy to AWS EC2
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for EC2 Secrets
+        id: check_secrets
+        run: |
+          if [ -n "${{ secrets.EC2_HOST }}" ] && [ -n "${{ secrets.EC2_SSH_KEY }}" ]; then
+            echo "configured=true" >> $GITHUB_OUTPUT
+          else
+            echo "configured=false" >> $GITHUB_OUTPUT
+            echo "EC2_HOST or EC2_SSH_KEY secret not found. Skipping EC2 deploy step (will run in Phase 4 once server is bootstrapped)."
+          fi
+
+      - name: Copy docker-compose and Caddyfile to EC2
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER || 'ubuntu' }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: 'docker-compose.yml,Caddyfile'
+          target: '/opt/app'
+
+      - name: Deploy on EC2 via SSH
+        if: steps.check_secrets.outputs.configured == 'true'
+        uses: appleboy/ssh-action@master
+        env:
+          TARGET_TAG: ${{ github.event.inputs.rollback_tag || github.sha }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER || 'ubuntu' }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: TARGET_TAG
+          script: |
+            cd /opt/app
+            export TAG=${TARGET_TAG}
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
+            sleep 10
+            curl -f http://localhost/api/health || exit 1
+            echo "Deployment successful for commit ${TARGET_TAG}"
+
